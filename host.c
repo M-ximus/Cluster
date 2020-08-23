@@ -4,7 +4,8 @@
 #include <stdlib.h>
 #include <arpa/inet.h>
 
-short int HOST_PORT = 0xDED;
+const short int HOST_PORT = 0xDED;
+const int MAGIC_NUMBER = 0x1234;
 
 int main()
 {
@@ -41,16 +42,19 @@ int main()
   struct sockaddr_in client_addr;
   socklen_t client_addr_len = sizeof(client_addr);
   int msg = 0;
+  ssize_t num_bytes = 0;
 
-  errno = 0;
-  ssize_t num_bytes = recvfrom(broadcast_sk, &msg, sizeof(msg), 0, (struct sockadrr*) &client_addr, &client_addr_len);
-  if (num_bytes < 0)
-  {
-    perror("Recv from error\n");
-    exit(EXIT_FAILURE);
-  }
+  do {
+    errno = 0;
+    num_bytes = recvfrom(broadcast_sk, &msg, sizeof(msg), 0, (struct sockadrr*) &client_addr, &client_addr_len);
+    if (num_bytes < 0)
+    {
+      perror("Recv from error\n");
+      exit(EXIT_FAILURE);
+    }
+  } while(num_bytes != sizeof(msg) || msg != MAGIC_NUMBER);
 
-  printf("%X", msg);
+  printf("%X\n", ntohs(client_addr.sin_port));
 
   return 0;
 }

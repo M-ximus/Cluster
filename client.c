@@ -5,6 +5,8 @@
 #include <arpa/inet.h>
 
 short int HOST_PORT = 0xDED;
+short int CLIENT_PORT = 0xBEAF;
+const int MAGIC_NUMBER = 0x1234;
 
 int main()
 {
@@ -24,15 +26,29 @@ int main()
     exit(EXIT_FAILURE);
   }
 
-  struct sockaddr_in broadcast_addr = {
+  struct sockaddr_in client_addr = {
+    .sin_family = AF_INET,
+    .sin_addr   = htonl(INADDR_BROADCAST),
+    .sin_port   = htons(CLIENT_PORT)
+  };
+
+  errno = 0;
+  ret = bind(broadcast_sk, (struct sockaddr*) &client_addr, sizeof(client_addr));
+  if (ret < 0)
+  {
+    perror("Bind client_addr error\n");
+    exit(EXIT_FAILURE);
+  }
+
+  struct sockaddr_in host_addr = {
     .sin_family = AF_INET,
     .sin_addr   = htonl(INADDR_BROADCAST),
     .sin_port   = htons(HOST_PORT)
   };
 
   errno = 0;
-  int test_msg = 0xDED;
-  ret = sendto(broadcast_sk, &test_msg, sizeof(test_msg), 0, (struct sockaddr*) &broadcast_addr, sizeof(broadcast_addr));
+  int msg = MAGIC_NUMBER;
+  ret = sendto(broadcast_sk, &msg, sizeof(msg), 0, (struct sockaddr*) &host_addr, sizeof(host_addr));
   if (ret < 0)
   {
     perror("Sendto error\n");
