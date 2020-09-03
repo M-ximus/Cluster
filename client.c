@@ -64,7 +64,24 @@ int main()
 
     ret = get_threads_info(&handle);
 
+    int all_thr = calc_all_thr(&handle);
+
+    printf("Num all threads %d\n")
+
     return 0;
+}
+
+int calc_all_thr(struct client_info* handle)
+{
+    if (handle == NULL)
+
+    int num_thr = 0;
+    for (int i = 0; i < handle->curr_num_hosts; i++)
+    {
+        num_thr += handle->hosts[i].num_thr;
+    }
+
+    return num_thr;
 }
 
 int get_threads_info(struct client_info* handle)
@@ -84,15 +101,13 @@ int get_threads_info(struct client_info* handle)
         return E_ERROR;
     }
 
-    struct epoll_event events[handle->curr_num_hosts];
-    struct epoll_event inter_events[handle->curr_num_hosts];
-
     for (int i = 0; i < handle->curr_num_hosts; i++)
     {
-        inter_events[i].events  = EPOLLIN | EPOLLHUP;
-        inter_events[i].data.fd = handle->hosts[i].fd;
+        struct epoll_event interesting_event; // or arrray?
+        inter_events.events  = EPOLLIN | EPOLLHUP;
+        inter_events.data.fd = handle->hosts[i].fd;
 
-        int ret = epoll_ctl(epollfd, EPOLL_CTL_ADD, handle->hosts[i].fd, inter_events + i);
+        int ret = epoll_ctl(epollfd, EPOLL_CTL_ADD, handle->hosts[i].fd, &interesting_event);
         if (ret < 0)
         {
             perror("[get_threads_info] epoll ctl add new fd error\n");
@@ -100,6 +115,7 @@ int get_threads_info(struct client_info* handle)
         }
     }
 
+    struct epoll_event events[MAX_EVENTS];
     int num_to_read = handle->curr_num_hosts;
     while (num_to_read != 0)
     {
@@ -110,9 +126,45 @@ int get_threads_info(struct client_info* handle)
             return E_ERROR;
         }
 
-        
-    }
+        for (int i = 0; i < ret; i++)
+        {
+            if (events[i].events & EPOLLHUP)
+            {
+                printf("[get_threads_info] EPOLLHUP error on %d fd", events[i].data.fd)
+                return E_ERROR;
+            }
 
+            for (int host_num = 0; host_num < handle->curr_num_hosts; host_num++)
+            {
+                if (handle->hosts[host_num].fd != events[i].data.fd)
+                    continue;
+
+                int num_recved = recv(handle->hosts[host_num].fd, &(handle->hosts[host_num].num_thr), sizeof(handle->hosts[host_num].num_thr), MSG_DONTWAIT);
+                if (num_recved < 0)
+                {
+                    perror("[get_threads_info] recv num threads error");
+                    return E_ERROR;
+                }
+
+                if (num_recved < sizeof(handle->hosts[host_num].num_thr)) // restart?
+                {
+                    printf("[get_threads_info] num recv < int\n");
+                    return E_ERROR;
+                }
+
+                int status = epoll_ctl(epollfd, EPOLL_CTL_DEL, handle->hosts[host_num].fd, NULL)
+                if (status < 0)
+                {
+                    perror("[get_threads_info] Delete from epoll error\n");
+                    return E_ERROR;
+                }
+
+                num_to_read--;
+
+                break;
+            }
+        }
+    }
 }
 
 int discovery(short int host_port, short int port, int magic)
