@@ -4,6 +4,7 @@
 #include <stdlib.h>
 #include <arpa/inet.h>
 #include "common.h"
+#include <limits.h>
 
 const short int HOST_DISCOVERY_PORT = 0xDED;
 const short int HOST_CONNECTION_PORT = 0xDEF;
@@ -43,7 +44,7 @@ int main(int argc, char* argv[])
 
     printf("[main] Connected to client\n");
 
-    ret = send_buff_block(&num_thr, sizeof(num_thr), sock);
+    ret = send_buff_block(&num_threads, sizeof(num_threads), sock);
     if (ret < 0)
     {
         printf("[main] Send num threads error\n");
@@ -74,7 +75,7 @@ int send_buff_block(void* buff, size_t buff_size, int sock)
         }
 
         sended += ret;
-    } while (sended != buff_size)
+    } while (sended != buff_size);
 
     return sended;
 }

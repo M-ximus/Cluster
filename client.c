@@ -20,7 +20,7 @@ struct host_info{
     int fd;
     int num_threads;
     int status;
-}
+};
 
 struct client_info{
     int listen_socket;
@@ -33,6 +33,7 @@ int discovery(short int host_port, short int port, int magic);
 int accept_host_connection(int listen_sock, struct client_info* handle);
 int create_listen_port(short int port, struct client_info* handle);
 int get_threads_info(struct client_info* handle);
+int calc_all_thr(struct client_info* handle);
 
 int main()
 {
@@ -66,7 +67,7 @@ int main()
 
     int all_thr = calc_all_thr(&handle);
 
-    printf("Num all threads %d\n")
+    printf("Num all threads %d\n", all_thr);
 
     return 0;
 }
@@ -74,11 +75,15 @@ int main()
 int calc_all_thr(struct client_info* handle)
 {
     if (handle == NULL)
+    {
+        printf("[calc_all_thr] Bad handle\n");
+        return -1;
+    }
 
     int num_thr = 0;
     for (int i = 0; i < handle->curr_num_hosts; i++)
     {
-        num_thr += handle->hosts[i].num_thr;
+        num_thr += handle->hosts[i].num_threads;
     }
 
     return num_thr;
@@ -86,6 +91,8 @@ int calc_all_thr(struct client_info* handle)
 
 int get_threads_info(struct client_info* handle)
 {
+    const int MAX_EVENTS = 32;
+
     if (handle == NULL)
     {
         printf("[get_threads_info] Bad args\n");
@@ -103,11 +110,11 @@ int get_threads_info(struct client_info* handle)
 
     for (int i = 0; i < handle->curr_num_hosts; i++)
     {
-        struct epoll_event interesting_event; // or arrray?
-        inter_events.events  = EPOLLIN | EPOLLHUP;
-        inter_events.data.fd = handle->hosts[i].fd;
+        struct epoll_event inter_event; // or arrray?
+        inter_event.events  = EPOLLIN | EPOLLHUP;
+        inter_event.data.fd = handle->hosts[i].fd;
 
-        int ret = epoll_ctl(epollfd, EPOLL_CTL_ADD, handle->hosts[i].fd, &interesting_event);
+        int ret = epoll_ctl(epollfd, EPOLL_CTL_ADD, handle->hosts[i].fd, &inter_event);
         if (ret < 0)
         {
             perror("[get_threads_info] epoll ctl add new fd error\n");
@@ -130,7 +137,7 @@ int get_threads_info(struct client_info* handle)
         {
             if (events[i].events & EPOLLHUP)
             {
-                printf("[get_threads_info] EPOLLHUP error on %d fd", events[i].data.fd)
+                printf("[get_threads_info] EPOLLHUP error on %d fd", events[i].data.fd);
                 return E_ERROR;
             }
 
@@ -139,20 +146,20 @@ int get_threads_info(struct client_info* handle)
                 if (handle->hosts[host_num].fd != events[i].data.fd)
                     continue;
 
-                int num_recved = recv(handle->hosts[host_num].fd, &(handle->hosts[host_num].num_thr), sizeof(handle->hosts[host_num].num_thr), MSG_DONTWAIT);
+                int num_recved = recv(handle->hosts[host_num].fd, &(handle->hosts[host_num].num_threads), sizeof(handle->hosts[host_num].num_threads), MSG_DONTWAIT);
                 if (num_recved < 0)
                 {
                     perror("[get_threads_info] recv num threads error");
                     return E_ERROR;
                 }
 
-                if (num_recved < sizeof(handle->hosts[host_num].num_thr)) // restart?
+                if (num_recved < sizeof(handle->hosts[host_num].num_threads)) // restart?
                 {
                     printf("[get_threads_info] num recv < int\n");
                     return E_ERROR;
                 }
 
-                int status = epoll_ctl(epollfd, EPOLL_CTL_DEL, handle->hosts[host_num].fd, NULL)
+                int status = epoll_ctl(epollfd, EPOLL_CTL_DEL, handle->hosts[host_num].fd, NULL);
                 if (status < 0)
                 {
                     perror("[get_threads_info] Delete from epoll error\n");
@@ -165,6 +172,8 @@ int get_threads_info(struct client_info* handle)
             }
         }
     }
+
+    return 0;
 }
 
 int discovery(short int host_port, short int port, int magic)
@@ -324,10 +333,10 @@ int connect_hosts(struct client_info* handle)
         if (ret == 0)
             break;
 
-        ret = accept_host_connection(handle->listen_socket, hosts);
+        ret = accept_host_connection(handle->listen_socket, handle);
         if (ret < 0)
         {
-            printf("[connect_hosts] accept connection %d error\n", hosts->curr_num_hosts);
+            printf("[connect_hosts] accept connection %d error\n", handle->curr_num_hosts);
             return E_ERROR;
         }
 
