@@ -11,15 +11,20 @@
 
 #define _GNU_SOURCE
 
-short int HOST_DISCOVERY_PORT = 0xDED;
-short int CLIENT_DISCOVERY_PORT = 0xBEAF;
-short int CLIENT_CONNECTION_PORT = 0xDEE;
-const int MAGIC_NUMBER = 0x1234;
+const short int HOST_DISCOVERY_PORT    = 0xDED;
+const short int CLIENT_DISCOVERY_PORT  = 0xBEAF;
+const short int CLIENT_CONNECTION_PORT = 0xDEE;
+const int MAGIC_NUMBER                 = 0x1234;
+
+const double global_start     = 1.0;
+const double global_end       = 33.0;
+const double global_precision = 0.000001;
 
 struct host_info{
     int fd;
     int num_threads;
     int status;
+    struct computing_task task;
 };
 
 struct client_info{
@@ -28,12 +33,19 @@ struct client_info{
     int curr_num_hosts;
 };
 
+struct nonblock_connection{
+    int need;
+    void* curr_data;
+};
+
 int connect_hosts(struct client_info* handle);
 int discovery(short int host_port, short int port, int magic);
 int accept_host_connection(int listen_sock, struct client_info* handle);
 int create_listen_port(short int port, struct client_info* handle);
 int get_threads_info(struct client_info* handle);
 int calc_all_thr(struct client_info* handle);
+int prepare_tasks(struct client_info* handle);
+int send_tasks(struct client_info* handle);
 
 int main()
 {
@@ -64,10 +76,166 @@ int main()
     printf("num of connections = %d\n", handle.curr_num_hosts);
 
     ret = get_threads_info(&handle);
+    if (ret < 0)
+    {
+        printf("[main] Get info about threads error\n");
+        exit(EXIT_FAILURE);
+    }
 
     int all_thr = calc_all_thr(&handle);
+    printf("Num of all connected threads %d\n", all_thr);
+    if (all_thr == 0)
+    {
+        printf("[main] Not enought thr((((\n");
+        exit(EXIT_FAILURE);
+    }
 
-    printf("Num all threads %d\n", all_thr);
+    ret = prepare_tasks(&handle);
+    if (ret < 0)
+    {
+        printf("[main] preparing tasks\n");
+        exit(EXIT_FAILURE);
+    }
+
+    ret = send_tasks(&handle);
+    if (ret < 0)
+    {
+        printf("[main] sending tasks error\n");
+        exit(EXIT_FAILURE);
+    }
+
+    return 0;
+}
+
+int send_tasks(struct client_info* handle)
+{
+    if (handle == NULL)
+    {
+        printf("[send_tasks] Bad args\n");
+        exit(EXIT_FAILURE);
+    }
+
+    const int MAX_EVENTS = 32;
+
+    errno = 0; // for all
+
+    int epollfd = epoll_create(1);
+    if (epollfd < 0)
+    {
+        perror("[send_tasks] Creating epoll error\n");
+        return E_ERROR;
+    }
+
+    struct nonblock_connection* control_data = (struct nonblock_connection*) calloc(handle->curr_num_hosts, sizeof(*control_data));
+    if (control_data == NULL)
+    {
+        perror("[send_tasks] alloc control data array\n");
+        return E_ERROR;
+    }
+
+    struct epoll_event inter_event; // maybe array
+    inter_event.events = EPOLLOUT | EPOLLHUP;
+
+    for (int i = 0; i < handle->curr_num_hosts; i++)
+    {
+        inter_event.data.fd = handle->hosts[i].fd;
+
+        int ret = epoll_ctl(epollfd, EPOLL_CTL_ADD, handle->hosts[i].fd, &inter_event);
+        if (ret < 0)
+        {
+            perror("[send_tasks] Adding new event error\n");
+            free(control_data);
+            return E_ERROR;
+        }
+
+        control_data[i].need      = sizeof(handle->hosts[i].task);
+        control_data[i].curr_data = &(handle->hosts[i].task);
+    }
+
+    struct epoll_event events[MAX_EVENTS];
+
+    int num_to_wait = handle->curr_num_hosts;
+    do{
+        int num_events = epoll_wait(epollfd, events, MAX_EVENTS, -1);
+        if (num_events < 0)
+        {
+            perror("[send_tasks] Wait event error\n");
+            free(control_data);
+            return E_ERROR;
+        }
+
+        for (int curr_event = 0; curr_event < num_events; curr_event++)
+        {
+            if (events[curr_event].events & EPOLLHUP)
+            {
+                printf("[send_tasks] Hup was detected\n");
+                free(control_data);
+                return E_ERROR;
+            }
+
+            for (int i = 0; i < handle->curr_num_hosts; i++)
+            {
+                if (handle->hosts[i].fd != events[curr_event].data.fd)
+                    continue;
+
+                int sended_bytes = send(handle->hosts[i].fd, control_data[i].curr_data, control_data[i].need, MSG_DONTWAIT);
+                if (sended_bytes < 0)
+                {
+                    perror("[send_tasks] Send tasks error\n");
+                    free(control_data);
+                    return E_ERROR;
+                }
+
+                control_data[i].need      -= sended_bytes;
+                control_data[i].curr_data += sended_bytes;
+
+                if (control_data[i].need == 0)
+                {
+                    int ret = epoll_ctl(epollfd, EPOLL_CTL_DEL, handle->hosts[i].fd, NULL);
+                    if (ret < 0)
+                    {
+                        perror("[send_tasks] delete old fd error\n");
+                        free(control_data);
+                        return E_ERROR;
+                    }
+
+                    num_to_wait--;
+                }
+
+                break;
+            }
+        }
+    } while (num_to_wait != 0);
+}
+
+int prepare_tasks(struct client_info* handle)
+{
+    if (handle == NULL)
+    {
+        printf("[prepare_tasks] Bad args\n");
+        return E_BADARGS;
+    }
+
+    int num_thr = calc_all_thr(handle);
+    if (num_thr < 0)
+    {
+        printf("[prepare_tasks] Calc all threads error\n");
+        return E_ERROR;
+    }
+
+    double step = (global_end - global_start) / ((double) num_thr);
+
+    double curr_start = global_start;
+    for (int i = 0; i < handle->curr_num_hosts; i++)
+    {
+        handle->hosts[i].task.start     = curr_start;
+        handle->hosts[i].task.end       = handle->hosts[i].num_threads * step + curr_start; // check result
+        handle->hosts[i].task.precision = global_precision;
+
+        curr_start = handle->hosts[i].task.end;
+
+        printf("New task: start = %lg, end = %lg, prec = %lg\n", handle->hosts[i].task.start, handle->hosts[i].task.end, handle->hosts[i].task.precision);
+    }
 
     return 0;
 }
@@ -172,6 +340,8 @@ int get_threads_info(struct client_info* handle)
             }
         }
     }
+
+    close(epollfd);
 
     return 0;
 }

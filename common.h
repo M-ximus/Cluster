@@ -8,4 +8,10 @@ enum errors{
   E_ERROR = -2,
 };
 
+struct computing_task{
+    double start;
+    double end;
+    double precision;
+};
+
 #endif

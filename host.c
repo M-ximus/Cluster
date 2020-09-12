@@ -15,6 +15,8 @@ long int give_num(const char* str_num);
 int connect_to_client(long client_addr, short int client_port, short int my_port);
 int wait_client(struct sockaddr_in* client_addr, short int port, int magic);
 int send_num_thr(long int num, int sock);
+int get_task(int fd, struct computing_task* task);
+int send_buff_block(void* buff, size_t buff_size, int sock);
 
 int main(int argc, char* argv[])
 {
@@ -52,6 +54,41 @@ int main(int argc, char* argv[])
     }
 
     printf("[main] Num of threads was sended\n");
+
+    struct computing_task task;
+    ret = get_task(sock, &task);
+    if (ret < 0)
+    {
+        printf("[main] geting task error\n");
+        exit(EXIT_FAILURE);
+    }
+
+    printf("\tstart = %lg\n\tend = %lg\n\tprec = %lg\n", task.start, task.end, task.precision);
+
+    return 0;
+}
+
+int get_task(int fd, struct computing_task* task)
+{
+    if (fd < 0 || task == NULL)
+    {
+        printf("[get_task] Bad args\n");
+        return E_ERROR;
+    }
+
+    errno = 0;
+
+    int ret = recv(fd, task, sizeof(*task), MSG_WAITALL);
+    if (ret < 0)
+    {
+        perror("[get_task] recv task error\n");
+        return E_ERROR;
+    }
+    if (ret != sizeof(*task))
+    {
+        printf("[get_task] Bad size of recv task\n");
+        return E_ERROR;
+    }
 
     return 0;
 }
