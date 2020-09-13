@@ -104,6 +104,8 @@ int main()
         exit(EXIT_FAILURE);
     }
 
+    sleep(5);
+
     return 0;
 }
 
