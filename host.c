@@ -49,6 +49,7 @@ void* alloc_thread_info(size_t num_threads, size_t* size);
 void* integral_thread(void* info);
 double func(double x);
 int cache_line_size();
+int send_result(int fd, struct result res);
 
 int main(int argc, char* argv[])
 {
@@ -84,6 +85,8 @@ int main(int argc, char* argv[])
         printf("[main] Send num threads error\n");
         exit(EXIT_FAILURE);
     }
+
+    printf("%d\n", ret);
 
     printf("[main] Num of threads was sended\n");
 
@@ -230,13 +233,51 @@ int main(int argc, char* argv[])
             }
         }
     } while (num_to_wait != 0);
+    close(epollfd);
 
     printf("Sum = %lg\n", sum);
+
+    struct result send_res = {
+        .sum = sum
+    };
+
+    ret = send_result(sock, send_res);
+    if (ret < 0)
+    {
+        printf("[main] sending result error\n");
+        exit(EXIT_FAILURE);
+    }
 
     return 0;
 }
 
-//int start_computation(int epollfd, void* info_arr, size_t thread_info_size, )
+int send_result(int fd, struct result res)
+{
+    if (fd < 0)
+    {
+        printf("[send_result] Bad args\n");
+        return E_BADARGS;
+    }
+
+    printf("I'm sending %lg\n", res.sum);
+
+    //uint64_t test = 0xABCDEF0123456789;
+    errno = 0;
+    int ret = send(fd, &res, sizeof(res), MSG_NOSIGNAL);
+    if (ret < 0)
+    {
+        perror("[send_result] Sending result error\n");
+        return E_ERROR;
+    }
+
+    if (ret < sizeof(res))
+    {
+        printf("[send_result] Not enough bytes were sent\n");
+        return E_ERROR;
+    }
+
+    return 0;
+}
 
 int cache_line_size()
 {

@@ -18,11 +18,11 @@ const int MAGIC_NUMBER                 = 0x1234;
 
 const double global_start     = 1.0;
 const double global_end       = 33.0;
-const double global_precision = 0.000001;
+const double global_precision = 0.00000001;
 
 struct host_info{
     int fd;
-    int num_threads;
+    long int num_threads;
     int status;
     struct computing_task task;
 };
@@ -46,6 +46,7 @@ int get_threads_info(struct client_info* handle);
 int calc_all_thr(struct client_info* handle);
 int prepare_tasks(struct client_info* handle);
 int send_tasks(struct client_info* handle);
+int recv_results(struct client_info* handle, double* res);
 
 int main()
 {
@@ -104,7 +105,156 @@ int main()
         exit(EXIT_FAILURE);
     }
 
-    sleep(5);
+
+    double res = 0.0;
+    ret = recv_results(&handle, &res);
+    if (ret < 0)
+    {
+        printf("[main] recv results error\n");
+        exit(EXIT_FAILURE);
+    }
+
+    printf("Result = %lg\n", res);
+
+    return 0;
+}
+
+int recv_results(struct client_info* handle, double* res)
+{
+    if (handle == NULL || res == NULL)
+    {
+        printf("[recv_results] Bad args\n");
+        return E_BADARGS;
+    }
+
+    errno = 0;
+
+    struct result* arr_res = (struct result*) calloc(handle->curr_num_hosts, sizeof(*arr_res));
+    if (arr_res == NULL)
+    {
+        perror("[recv_results] Alloc results array error\n");
+        return E_ERROR;
+    }
+
+    int epollfd = epoll_create(1);
+    if (epollfd < 0)
+    {
+        perror("[recv_results] Epoll create error\n");
+        return E_ERROR;
+    }
+
+    struct nonblock_connection* control_data = (struct nonblock_connection*) calloc(handle->curr_num_hosts, sizeof(*control_data));
+    if (control_data == NULL)
+    {
+        perror("[recv_results] alloc control data array\n");
+        return E_ERROR;
+    }
+
+    struct epoll_event event_ctr;
+    event_ctr.events = EPOLLIN | EPOLLHUP;
+
+    for(int i = 0; i < handle->curr_num_hosts; i++)
+    {
+        event_ctr.data.fd = handle->hosts[i].fd;
+        int ret = epoll_ctl(epollfd, EPOLL_CTL_ADD, handle->hosts[i].fd, &event_ctr);
+        if (ret < 0)
+        {
+            perror("[recv_results] Adding new fd\n");
+            return E_ERROR;
+        }
+
+        arr_res[i].sum = 0.0;
+
+        control_data[i].need      = sizeof(struct result);
+        control_data[i].curr_data = &(arr_res[i]);
+
+        //printf("%lg\n", ((struct result*)(control_data[i].curr_data))->sum);
+    }
+
+    const int MAX_EVENTS = 32;
+    struct epoll_event events[MAX_EVENTS];
+    int num_to_wait = handle->curr_num_hosts;
+
+    uint64_t test = 0;
+
+    do{
+        int num_events = epoll_wait(epollfd, events, MAX_EVENTS, -1);
+        if (num_events < 0)
+        {
+            perror("[recv_results] Waiting events error\n");
+            free(control_data);
+            free(arr_res);
+            return E_ERROR;
+        }
+
+        for(int curr_event = 0; curr_event < num_events; curr_event++)
+        {
+            if (events[curr_event].events & EPOLLHUP)
+            {
+                printf("[recv_results] One of the hosts died\n");
+                free(control_data);
+                free(arr_res);
+                return E_ERROR;
+            }
+
+            for(int i = 0; i < handle->curr_num_hosts; i++)
+            {
+                if (handle->hosts[i].fd != events[curr_event].data.fd)
+                    continue;
+
+                //printf("%p\n", control_data[i].curr_data);
+
+                errno = 0;
+                int recved = recv(handle->hosts[i].fd, control_data[i].curr_data, control_data[i].need, MSG_DONTWAIT);
+                if (recved <= 0)
+                {
+                    perror("[recv_results] Recv result error\n");
+                    free(control_data);
+                    free(arr_res);
+                    return E_ERROR;
+                }
+
+                //printf("sum = %lX, recv = %d\n", test, recved);
+                //printf("%p\n", control_data[i].curr_data);
+
+                control_data[i].need      -= recved;
+                control_data[i].curr_data += recved;
+
+                if (control_data[i].need == 0)
+                {
+                    int ret = epoll_ctl(epollfd, EPOLL_CTL_DEL, handle->hosts[i].fd, NULL);
+                    if (ret < 0)
+                    {
+                        perror("[recv_results] Delete recv result fd from epoll error\n");
+                        free(control_data);
+                        free(arr_res);
+                        return E_ERROR;
+                    }
+
+                    printf("Result was receved, %lg\n", arr_res[i].sum);
+
+                    num_to_wait--;
+                }
+
+                break;
+            }
+        }
+    } while (num_to_wait > 0);
+
+    close(epollfd);
+    free(control_data);
+
+    double fast_res = 0.0;
+    for(int i = 0; i < handle->curr_num_hosts; i++)
+    {
+        fast_res += arr_res[i].sum;
+        //uint64_t save = be64toh(*((uint64_t*)&arr_res[i].sum));
+        //printf("%lg\n", *((double*)&save));
+    }
+
+    *res = fast_res;
+
+    free(arr_res);
 
     return 0;
 }
@@ -180,7 +330,7 @@ int send_tasks(struct client_info* handle)
                 if (handle->hosts[i].fd != events[curr_event].data.fd)
                     continue;
 
-                int sended_bytes = send(handle->hosts[i].fd, control_data[i].curr_data, control_data[i].need, MSG_DONTWAIT);
+                int sended_bytes = send(handle->hosts[i].fd, control_data[i].curr_data, control_data[i].need, MSG_DONTWAIT | MSG_NOSIGNAL);
                 if (sended_bytes < 0)
                 {
                     perror("[send_tasks] Send tasks error\n");
@@ -208,6 +358,10 @@ int send_tasks(struct client_info* handle)
             }
         }
     } while (num_to_wait != 0);
+
+    close(epollfd);
+
+    return 0;
 }
 
 int prepare_tasks(struct client_info* handle)

@@ -16,4 +16,8 @@ struct computing_task{
     double precision;
 };
 
+struct result{
+    double sum;
+};
+
 #endif
