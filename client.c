@@ -8,6 +8,8 @@
 #include <unistd.h>
 #include "common.h"
 #include "sys/epoll.h"
+#include <netinet/in.h>
+#include <netinet/tcp.h>
 
 #define _GNU_SOURCE
 
@@ -17,8 +19,10 @@ const short int CLIENT_CONNECTION_PORT = 0xDEE;
 const int MAGIC_NUMBER                 = 0x1234;
 
 const double global_start     = 1.0;
-const double global_end       = 33.0;
+const double global_end       = 101.0;
 const double global_precision = 0.00000001;
+
+const unsigned int TIMEOUT = 5000;
 
 struct host_info{
     int fd;
@@ -47,6 +51,8 @@ int calc_all_thr(struct client_info* handle);
 int prepare_tasks(struct client_info* handle);
 int send_tasks(struct client_info* handle);
 int recv_results(struct client_info* handle, double* res);
+int set_keepalive(int fd);
+int set_performance_socket_settings(int fd);
 
 int main()
 {
@@ -151,7 +157,7 @@ int recv_results(struct client_info* handle, double* res)
     }
 
     struct epoll_event event_ctr;
-    event_ctr.events = EPOLLIN | EPOLLHUP;
+    event_ctr.events = EPOLLIN | EPOLLHUP | EPOLLRDHUP;
 
     for(int i = 0; i < handle->curr_num_hosts; i++)
     {
@@ -189,7 +195,7 @@ int recv_results(struct client_info* handle, double* res)
 
         for(int curr_event = 0; curr_event < num_events; curr_event++)
         {
-            if (events[curr_event].events & EPOLLHUP)
+            if (events[curr_event].events & EPOLLHUP || events[curr_event].events & EPOLLRDHUP)
             {
                 printf("[recv_results] One of the hosts died\n");
                 free(control_data);
@@ -206,11 +212,17 @@ int recv_results(struct client_info* handle, double* res)
 
                 errno = 0;
                 int recved = recv(handle->hosts[i].fd, control_data[i].curr_data, control_data[i].need, MSG_DONTWAIT);
-                if (recved <= 0)
+                if (recved < 0)
                 {
                     perror("[recv_results] Recv result error\n");
                     free(control_data);
                     free(arr_res);
+                    return E_ERROR;
+                }
+
+                if (recved == 0)
+                {
+                    printf("[recv_results] Host end was closed\n");
                     return E_ERROR;
                 }
 
@@ -286,7 +298,7 @@ int send_tasks(struct client_info* handle)
     }
 
     struct epoll_event inter_event; // maybe array
-    inter_event.events = EPOLLOUT | EPOLLHUP;
+    inter_event.events = EPOLLOUT | EPOLLHUP | EPOLLRDHUP;
 
     for (int i = 0; i < handle->curr_num_hosts; i++)
     {
@@ -318,7 +330,7 @@ int send_tasks(struct client_info* handle)
 
         for (int curr_event = 0; curr_event < num_events; curr_event++)
         {
-            if (events[curr_event].events & EPOLLHUP)
+            if (events[curr_event].events & EPOLLHUP || events[curr_event].events & EPOLLRDHUP)
             {
                 printf("[send_tasks] Hup was detected\n");
                 free(control_data);
@@ -435,7 +447,7 @@ int get_threads_info(struct client_info* handle)
     for (int i = 0; i < handle->curr_num_hosts; i++)
     {
         struct epoll_event inter_event; // or arrray?
-        inter_event.events  = EPOLLIN | EPOLLHUP;
+        inter_event.events  = EPOLLIN | EPOLLHUP | EPOLLRDHUP;
         inter_event.data.fd = handle->hosts[i].fd;
 
         int ret = epoll_ctl(epollfd, EPOLL_CTL_ADD, handle->hosts[i].fd, &inter_event);
@@ -459,7 +471,7 @@ int get_threads_info(struct client_info* handle)
 
         for (int i = 0; i < ret; i++)
         {
-            if (events[i].events & EPOLLHUP)
+            if (events[i].events & EPOLLHUP || events[i].events & EPOLLRDHUP)
             {
                 printf("[get_threads_info] EPOLLHUP error on %d fd", events[i].data.fd);
                 return E_ERROR;
@@ -562,16 +574,122 @@ int accept_host_connection(int listen_sock, struct client_info* handle)
         return E_BADARGS;
     }
 
-    errno = 0;
-    int new_fd = accept4(listen_sock, NULL, NULL, SOCK_NONBLOCK);
-    if (new_fd < 0)
+    int new_fd = 0;
+    do {
+        errno = 0;
+        new_fd = accept4(listen_sock, NULL, NULL, SOCK_NONBLOCK);
+        if (new_fd < 0 && errno != EAGAIN)
+        {
+            perror("[accept_host_connection] Accept4 new connection error\n");
+            return E_ERROR;
+        }
+        if (errno == EAGAIN)
+            break;
+
+        int ret = set_keepalive(new_fd);
+        if (ret < 0)
+        {
+            printf("[accept_host_connection] Set keepalive settings error\n");
+            return E_ERROR;
+        }
+
+        ret = set_performance_socket_settings(new_fd);
+        if (ret < 0)
+        {
+            printf("[accept_host_connection] Set CORK and NODELAY settings\n");
+            return E_ERROR;
+        }
+
+        ret = setsockopt(new_fd, IPPROTO_TCP, TCP_USER_TIMEOUT, &TIMEOUT, sizeof(TIMEOUT));
+        if (ret < 0)
+        {
+            perror("[accept_host_connection] set TIMEOUT error\n");
+            return E_ERROR;
+        }
+
+        ////////////////////////////////////////////////////////////////////////
+
+        handle->hosts[handle->curr_num_hosts].fd = new_fd;
+        handle->curr_num_hosts++;
+
+    } while(new_fd > 0);
+
+    return 0;
+}
+
+int set_performance_socket_settings(int fd)
+{
+    if (fd < 0)
     {
-        perror("[accept_host_connection] Accept4 new connection error\n");
+        printf("[set_performance_socket_settings] Bad args\n");
+        return E_BADARGS;
+    }
+
+    errno = 0;
+
+    int disable = 0;
+
+    int ret = setsockopt(fd, IPPROTO_TCP, TCP_CORK, &disable, sizeof(disable));
+    if (ret < 0)
+    {
+        perror("[set_performance_socket_settings] Disable CORK error\n");
         return E_ERROR;
     }
 
-    handle->hosts[handle->curr_num_hosts].fd = new_fd;
-    handle->curr_num_hosts++;
+    int enable = 1;
+    ret = setsockopt(fd, IPPROTO_TCP, TCP_NODELAY, &enable, sizeof(enable));
+    if (ret < 0)
+    {
+        perror("[set_performance_socket_settings] Enable NODELAY error\n");
+        return E_ERROR;
+    }
+
+    return 0;
+}
+
+int set_keepalive(int fd)
+{
+    const int COUNTS_TO_DIE = 4;
+    const int IDLE_TIME     = 1;
+    const int INTERVAL      = 1; // in secs
+
+    if (fd < 0)
+    {
+        printf("[set_keepalive] Bad args\n");
+        return E_BADARGS;
+    }
+
+    errno = 0; // for all operations;
+
+    int enable = 1;
+
+    int ret = setsockopt(fd, SOL_SOCKET, SO_KEEPALIVE, &enable, sizeof(enable));
+    if (ret < 0)
+    {
+        perror("[set_keepalive] set SO_KEEPALIVE error\n");
+        return E_ERROR;
+    }
+
+    ret = setsockopt(fd, IPPROTO_TCP, TCP_KEEPCNT, &COUNTS_TO_DIE, sizeof(COUNTS_TO_DIE));
+    if (ret < 0)
+    {
+        perror("[set_keepalive] set COUNTS_TO_DIE error\n");
+        return E_ERROR;
+    }
+
+    ret = setsockopt(fd, IPPROTO_TCP, TCP_KEEPIDLE, &IDLE_TIME, sizeof(IDLE_TIME));
+    if (ret < 0)
+    {
+        perror("[set_keepalive] set IDLE_TIME error\n");
+        return E_ERROR;
+    }
+
+    ret = setsockopt(fd, IPPROTO_TCP, TCP_KEEPINTVL, &INTERVAL, sizeof(INTERVAL));
+    if (ret < 0)
+    {
+        perror("[set_keepalive] set INTERVAL error\n");
+        return E_ERROR;
+    }
 
     return 0;
 }
@@ -593,6 +711,7 @@ int create_listen_port(short int port, struct client_info* handle)
     }
 
     int enable = 1;
+    errno = 0;
     int ret = setsockopt(listen_sock, SOL_SOCKET, SO_REUSEADDR, &enable, sizeof(enable));
     if (ret < 0)
     {

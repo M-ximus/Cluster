@@ -14,11 +14,15 @@
 #include <sys/sysinfo.h>
 #include <pthread.h>
 #include <math.h>
+#include <netinet/in.h>
+#include <netinet/tcp.h>
 
 const short int HOST_DISCOVERY_PORT = 0xDED;
 const short int HOST_CONNECTION_PORT = 0xDEF;
 const short int CLIENT_CONNECTION_PORT = 0xDEE;
 const int MAGIC_NUMBER = 0x1234;
+
+const unsigned int TIMEOUT = 5000;
 
 typedef struct thread_info
 {
@@ -50,6 +54,9 @@ void* integral_thread(void* info);
 double func(double x);
 int cache_line_size();
 int send_result(int fd, struct result res);
+int set_keepalive(int fd);
+int config_socket(int fd);
+int set_performance_socket_settings(int fd);
 
 int main(int argc, char* argv[])
 {
@@ -76,8 +83,20 @@ int main(int argc, char* argv[])
     }
 
     int sock = connect_to_client(ntohl(client_addr.sin_addr.s_addr), CLIENT_CONNECTION_PORT, HOST_CONNECTION_PORT);
+    if (sock < 0)
+    {
+        printf("[main] Connection to client error\n");
+        exit(EXIT_FAILURE);
+    }
 
-    printf("[main] Connected to client\n");
+    ret = config_socket(sock);
+    if (ret < 0)
+    {
+        printf("[main] Config new socket error\n");
+        exit(EXIT_FAILURE);
+    }
+
+    printf("Connected to client\n");
 
     ret = send_buff_block(&num_threads, sizeof(num_threads), sock);
     if (ret < 0)
@@ -86,7 +105,7 @@ int main(int argc, char* argv[])
         exit(EXIT_FAILURE);
     }
 
-    printf("%d\n", ret);
+    //printf("%d\n", ret);
 
     printf("[main] Num of threads was sended\n");
 
@@ -145,7 +164,7 @@ int main(int argc, char* argv[])
     }
 
     struct epoll_event event_ctr;
-    event_ctr.events = EPOLLIN | EPOLLHUP;
+    event_ctr.events = EPOLLIN | EPOLLHUP | EPOLLRDHUP;
 
     for(int i = 0; i < num_threads + num_parasites; i++)
     {
@@ -174,7 +193,7 @@ int main(int argc, char* argv[])
         }
     }
 
-    event_ctr.events  = EPOLLHUP;
+    event_ctr.events  = EPOLLHUP | EPOLLRDHUP;
     event_ctr.data.fd = sock;
     errno = 0;
     ret = epoll_ctl(epollfd, EPOLL_CTL_ADD, sock, &event_ctr);
@@ -198,9 +217,9 @@ int main(int argc, char* argv[])
 
         for(int curr_event = 0; curr_event < num_events; curr_event++)
         {
-            if (events[curr_event].events & EPOLLHUP)
+            if (events[curr_event].events & EPOLLHUP || events[curr_event].events & EPOLLRDHUP)
             {
-                printf("[main] Epoll hup in calculation\n");
+                printf("[main] Epollhup on calculation\n");
                 exit(EXIT_FAILURE);
             }
 
@@ -599,6 +618,116 @@ int wait_client(struct sockaddr_in* client_addr, short int port, int magic)
         return E_ERROR;
       }
     } while(num_bytes != sizeof(magic) || msg != magic);
+
+    return 0;
+}
+
+int config_socket(int fd)
+{
+    if (fd < 0)
+    {
+        printf("[config_socket] Bad args\n");
+        return E_BADARGS;
+    }
+
+    int ret = set_keepalive(fd);
+    if (ret < 0)
+    {
+        printf("[config_socket] set keepalive error\n");
+        return E_ERROR;
+    }
+
+    ret = set_performance_socket_settings(fd);
+    if (ret < 0)
+    {
+        printf("[config_socket] set CORK and NODELAY error\n");
+        return E_ERROR;
+    }
+
+    errno = 0;
+    ret = setsockopt(fd, IPPROTO_TCP, TCP_USER_TIMEOUT, &TIMEOUT, sizeof(TIMEOUT));
+    if(ret < 0)
+    {
+        perror("[config_socket] set TIMEOUT error\n");
+        return E_ERROR;
+    }
+
+    return 0;
+}
+
+int set_keepalive(int fd)
+{
+    const int COUNTS_TO_DIE = 4;
+    const int IDLE_TIME     = 1;
+    const int INTERVAL      = 1; // in secs
+
+    if (fd < 0)
+    {
+        printf("[set_keepalive] Bad args\n");
+        return E_BADARGS;
+    }
+
+    errno = 0; // for all operations;
+
+    int enable = 1;
+
+    int ret = setsockopt(fd, SOL_SOCKET, SO_KEEPALIVE, &enable, sizeof(enable));
+    if (ret < 0)
+    {
+        perror("[set_keepalive] set SO_KEEPALIVE error\n");
+        return E_ERROR;
+    }
+
+    ret = setsockopt(fd, IPPROTO_TCP, TCP_KEEPCNT, &COUNTS_TO_DIE, sizeof(COUNTS_TO_DIE));
+    if (ret < 0)
+    {
+        perror("[set_keepalive] set COUNTS_TO_DIE error\n");
+        return E_ERROR;
+    }
+
+    ret = setsockopt(fd, IPPROTO_TCP, TCP_KEEPIDLE, &IDLE_TIME, sizeof(IDLE_TIME));
+    if (ret < 0)
+    {
+        perror("[set_keepalive] set IDLE_TIME error\n");
+        return E_ERROR;
+    }
+
+    ret = setsockopt(fd, IPPROTO_TCP, TCP_KEEPINTVL, &INTERVAL, sizeof(INTERVAL));
+    if (ret < 0)
+    {
+        perror("[set_keepalive] set INTERVAL error\n");
+        return E_ERROR;
+    }
+
+    return 0;
+}
+
+int set_performance_socket_settings(int fd)
+{
+    if (fd < 0)
+    {
+        printf("[set_performance_socket_settings] Bad args\n");
+        return E_BADARGS;
+    }
+
+    errno = 0;
+
+    int disable = 0;
+
+    int ret = setsockopt(fd, IPPROTO_TCP, TCP_CORK, &disable, sizeof(disable));
+    if (ret < 0)
+    {
+        perror("[set_performance_socket_settings] Disable CORK error\n");
+        return E_ERROR;
+    }
+
+    int enable = 1;
+    ret = setsockopt(fd, IPPROTO_TCP, TCP_NODELAY, &enable, sizeof(enable));
+    if (ret < 0)
+    {
+        perror("[set_performance_socket_settings] Enable NODELAY error\n");
+        return E_ERROR;
+    }
 
     return 0;
 }
