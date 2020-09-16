@@ -20,7 +20,7 @@ const int MAGIC_NUMBER                 = 0x1234;
 
 const double global_start     = 1.0;
 const double global_end       = 101.0;
-const double global_precision = 0.00000001;
+const double global_precision = 0.00000002;
 
 const unsigned int TIMEOUT = 5000;
 
@@ -756,7 +756,7 @@ int connect_hosts(struct client_info* handle)
 
     struct timeval waiting_time = {
         .tv_sec = 0,
-        .tv_usec = 250000 /*0.25 sec*/
+        .tv_usec = 1000000 /*1 sec*/
     };
 
     fd_set read_fds;

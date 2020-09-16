@@ -252,7 +252,7 @@ int main(int argc, char* argv[])
             }
         }
     } while (num_to_wait != 0);
-    close(epollfd);
+    //close(epollfd);
 
     printf("Sum = %lg\n", sum);
 
@@ -264,6 +264,14 @@ int main(int argc, char* argv[])
     if (ret < 0)
     {
         printf("[main] sending result error\n");
+        exit(EXIT_FAILURE);
+    }
+
+    errno = 0;
+    ret = epoll_wait(epollfd, events, 32, -1); // waiting death of the
+    if (ret < 0)
+    {
+        perror("[main] Waiting client death error\n");
         exit(EXIT_FAILURE);
     }
 
